@@ -38,14 +38,14 @@ python generate.py --sd_ver 3 --exp_type divin \
 
 | Method | `--exp_type` | Key Arguments | Description |
 |--------|-------------|---------------|-------------|
-| **DivIn** (Ours) | `divin` | `--temperature`, `--lr`, `--max_steps` | Langevin dynamics initialization |
+| **DivIn** (Ours) | `divin` | `--temperature`, `--lr`, `--max_steps` | Diversity-inducing initialization |
 | **DivIn + CADS** | `divin_cads` | DivIn args + `--cads_tau1`, `--cads_scale` | DivIn initialization + condition annealing |
 | **DivIn + Interval** | `divin_interval` | DivIn args + `--ign_start`, `--ign_end` | DivIn initialization + interval guidance |
 | **DivIn + Particle** | `divin_parti` | DivIn args + `--coeff` | DivIn initialization + particle guidance |
 | Standard CFG | `origin_cfg_local` | `--guidance_scale` | Baseline without mitigation |
-| SAIL | `sail` | `--sail_thres`, `--lr`, `--max_steps`, `--sail_budget` | Score-based Active Inference Learning |
+| SAIL | `sail` | `--sail_thres`, `--lr`, `--max_steps`, `--sail_budget` | Sharpness-aware Initialization |
 | Particle Guidance | `parti` | `--coeff` | Repulsive particle guidance during denoising |
-| CADS | `cads` | `--cads_tau1`, `--cads_tau2`, `--cads_scale` | Conditional Annealing Diffusion Sampling |
+| CADS | `cads` | `--cads_tau1`, `--cads_tau2`, `--cads_scale` | Condition-Annealed Diffusion Sampler |
 | Interval Guidance | `interval` | `--ign_start`, `--ign_end` | CFG applied only within timestep interval |
 
 ## Key Hyperparameters
