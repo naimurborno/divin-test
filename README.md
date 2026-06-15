@@ -4,6 +4,8 @@ Official code for the paper *Initialization is Half the Battle: Diverse Initiali
 
 DivIn proposes a **Langevin dynamics-based diverse initialization** method that optimizes initial noise latents before denoising to improve generation diversity, with minimal impact on image quality.
 
+Paper link (arXiv): [https://arxiv.org/abs/2606.02453](https://arxiv.org/abs/2606.02453)
+
 If you have any questions about this work, please contact Xiang (<xiangli@comp.nus.edu.sg>)
 
 ## Installation
