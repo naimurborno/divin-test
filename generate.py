@@ -9,8 +9,11 @@ Supports Stable Diffusion 1.x and 3.x with multiple methods:
 - Interval Guidance
 - Origin (standard CFG baseline)
 
-Usage:
+Usage (single GPU):
     python generate.py --sd_ver 1 --exp_type divin --data_path prompts/general_prompt.txt
+
+Usage (dual GPU via launcher):
+    python launch_dual_gpu.py --script generate.py --gpus 0,1 --sd_ver 1 --exp_type divin --data_path prompts/general_prompt.txt
 """
 
 import argparse
@@ -28,7 +31,7 @@ from diffusers import UNet2DConditionModel
 def main(args):
     torch.set_default_dtype(torch.bfloat16)
     used_dtype = torch.bfloat16
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu"
     generator = torch.Generator(device=device).manual_seed(args.gen_seed)
 
     # --- Model Loading ---
@@ -52,7 +55,10 @@ def main(args):
 
     # --- Output Path ---
     gen_img_path = args.output_dir
-    gen_img_path = os.path.join(gen_img_path, f'seed{args.gen_seed}')
+    if args.world_size > 1:
+        gen_img_path = os.path.join(gen_img_path, f'seed{args.gen_seed}_rank{args.rank}')
+    else:
+        gen_img_path = os.path.join(gen_img_path, f'seed{args.gen_seed}')
 
     if 'sail' in args.exp_type:
         gen_img_path = os.path.join(gen_img_path,
@@ -77,68 +83,76 @@ def main(args):
     if 'cfg' in args.exp_type:
         gen_img_path += f'_guidance{args.guidance_scale}'
 
-    print(f"Output directory: {gen_img_path}")
+    print(f"[Rank {args.rank}] Output directory: {gen_img_path}")
     os.makedirs(gen_img_path, exist_ok=True)
+
+    # --- Read and Split Prompts ---
+    with open(args.data_path, 'r') as file:
+        all_lines = file.readlines()
+
+    # Round-robin split: each rank processes every world_size-th prompt
+    lines = [(i, line) for i, line in enumerate(all_lines) if i % args.world_size == args.rank]
+
+    print(f"[Rank {args.rank}] Processing {len(lines)}/{len(all_lines)} prompts on {device}")
 
     # --- Generation Loop ---
     d = {'caption': [], 'wall_time': [], 'nfe': []}
 
-    with open(args.data_path, 'r') as file:
-        for line_id, line in enumerate(file):
-            prompt = line.strip()
-            print(f"[{line_id}] {prompt}")
-            d['caption'].append(prompt)
+    for line_id, line in lines:
+        prompt = line.strip()
+        print(f"[Rank {args.rank}][Global {line_id}] {prompt}")
+        d['caption'].append(prompt)
 
-            # Call pipeline
-            pipe_kwargs = dict(
-                guidance_scale=args.guidance_scale,
-                num_images_per_prompt=args.gen_num,
-                num_inference_steps=args.num_inference_steps,
-                generator=generator,
-                args=args,
-            )
-            if args.sd_ver == 3:
-                pipe_kwargs.update(height=args.height, width=args.width)
+        # Call pipeline
+        pipe_kwargs = dict(
+            guidance_scale=args.guidance_scale,
+            num_images_per_prompt=args.gen_num,
+            num_inference_steps=args.num_inference_steps,
+            generator=generator,
+            args=args,
+        )
+        if args.sd_ver == 3:
+            pipe_kwargs.update(height=args.height, width=args.width)
 
-            if 'sail' in args.exp_type:
-                images, w_time, n_nfe, loss_log, hvp_log, gauss_log, step_log = pipe(prompt, **pipe_kwargs)
-            elif 'divin' in args.exp_type:
-                images, w_time, n_nfe, loss_log, norm_log, energy_log = pipe(prompt, **pipe_kwargs)
-            else:
-                images, w_time, n_nfe = pipe(prompt, **pipe_kwargs)
+        if 'sail' in args.exp_type:
+            images, w_time, n_nfe, loss_log, hvp_log, gauss_log, step_log = pipe(prompt, **pipe_kwargs)
+        elif 'divin' in args.exp_type:
+            images, w_time, n_nfe, loss_log, norm_log, energy_log = pipe(prompt, **pipe_kwargs)
+        else:
+            images, w_time, n_nfe = pipe(prompt, **pipe_kwargs)
 
-            d['wall_time'].append(w_time)
-            d['nfe'].append(n_nfe)
+        d['wall_time'].append(w_time)
+        d['nfe'].append(n_nfe)
 
-            image = images.images
+        image = images.images
 
-            # Save images
-            if 'imagenet' in args.data_path:
-                class_name = prompt.split("a photo of a ")[1].strip().replace(" ", "_")
-                path = os.path.join(gen_img_path, class_name)
-                os.makedirs(path, exist_ok=True)
-                for i in range(len(image)):
-                    img_resized = image[i].resize((256, 256), Image.Resampling.LANCZOS)
-                    img_resized.save(os.path.join(path, f'image_{i}.png'))
-            else:
-                path = os.path.join(gen_img_path, f'{line_id}')
-                os.makedirs(path, exist_ok=True)
-                for i in range(len(image)):
-                    image[i].save(os.path.join(path, f'{i}.png'))
+        # Save images
+        if 'imagenet' in args.data_path:
+            class_name = prompt.split("a photo of a ")[1].strip().replace(" ", "_")
+            path = os.path.join(gen_img_path, class_name)
+            os.makedirs(path, exist_ok=True)
+            for i in range(len(image)):
+                img_resized = image[i].resize((256, 256), Image.Resampling.LANCZOS)
+                img_resized.save(os.path.join(path, f'image_{i}.png'))
+        else:
+            path = os.path.join(gen_img_path, f'{line_id}')
+            os.makedirs(path, exist_ok=True)
+            for i in range(len(image)):
+                image[i].save(os.path.join(path, f'{i}.png'))
 
-            # Save optimization logs
-            if 'sail' in args.exp_type:
-                log_df = pd.DataFrame({
-                    'step': step_log, 'loss': loss_log,
-                    'hvp_loss': hvp_log, 'gaussianity': gauss_log,
-                })
-                log_df.to_csv(os.path.join(path, 'optimization_log.csv'), index=False)
-            elif 'divin' in args.exp_type:
-                log_df = pd.DataFrame({
-                    'step': range(len(loss_log)), 'loss': loss_log,
-                    'gaussianity': norm_log, 'energy': energy_log,
-                })
-                log_df.to_csv(os.path.join(path, 'optimization_log.csv'), index=False)
+        # Save optimization logs
+        if 'sail' in args.exp_type:
+            log_df = pd.DataFrame({
+                'step': step_log, 'loss': loss_log,
+                'hvp_loss': hvp_log, 'gaussianity': gauss_log,
+            })
+            log_df.to_csv(os.path.join(path, 'optimization_log.csv'), index=False)
+        elif 'divin' in args.exp_type:
+            log_df = pd.DataFrame({
+                'step': range(len(loss_log)), 'loss': loss_log,
+                'gaussianity': norm_log, 'energy': energy_log,
+            })
+            log_df.to_csv(os.path.join(path, 'optimization_log.csv'), index=False)
 
     # Save summary CSV
     df = pd.DataFrame(data=d)
@@ -149,7 +163,7 @@ def main(args):
         avg_time = sum(d['wall_time']) / len(d['wall_time'])
         avg_nfe = sum(d['nfe']) / len(d['nfe'])
         print("\n" + "=" * 50)
-        print(f"Experiment Summary ({args.exp_type}):")
+        print(f"[Rank {args.rank}] Experiment Summary ({args.exp_type}):")
         print(f"  Total Prompts: {len(d['wall_time'])}")
         print(f"  Avg Wall-clock Time: {avg_time:.4f} s")
         print(f"  Avg NFE: {avg_nfe:.2f}")
@@ -178,6 +192,11 @@ if __name__ == "__main__":
     parser.add_argument("--prompt_type", default='test', type=str, help="Prompt category name")
     parser.add_argument("--data_path", default='prompts/sample_mitigation_1.txt', type=str)
     parser.add_argument("--output_dir", default='./outputs', type=str, help="Output directory")
+
+    # Multi-GPU
+    parser.add_argument("--gpu_id", default=0, type=int, help="GPU device ID to use")
+    parser.add_argument("--rank", default=0, type=int, help="Process rank for prompt splitting")
+    parser.add_argument("--world_size", default=1, type=int, help="Total number of processes")
 
     # DivIn hyperparameters
     parser.add_argument("--lr", default=0.05, type=float, help="Step size eta")
