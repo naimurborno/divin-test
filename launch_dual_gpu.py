@@ -9,7 +9,7 @@ def main():
     )
     parser.add_argument(
         "--script", required=True,
-        choices=["divin-test/generate.py", "generate_imagenet.py"],
+        choices=["generate.py", "generate_imagenet.py"],
         help="Which generation script to run"
     )
     parser.add_argument(
